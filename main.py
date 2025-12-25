@@ -1,35 +1,49 @@
 """
 Streamlit web app with:
  - Simple login page
- - Realtime webcam object detection using ultralytics YOLO/RT-DETR model
+ - Realtime webcam detection using ultralytics YOLO models
+ - Support for: Object Detection, Pose Estimation, Instance Segmentation
 
 Notes:
- - This demo uses simple, in-memory credentials (NOT secure). For production use a proper auth system.
- - Make sure yolov8 model file (yolov8n.pt) is available or the ultralytics package can download it.
+ - This demo uses simple, in-memory credentials (NOT secure).
+ - Models are downloaded automatically by ultralytics if not present.
 """
 
 import streamlit as st
 import time
 import cv2
-import numpy as np
-from threading import Thread
 
 # -----------------------
-# Configuration & helper
+# Configuration
 # -----------------------
-st.set_page_config(page_title="YOLOv8 Realtime Demo", layout="wide")
+st.set_page_config(page_title="YOLO Multi-Task Demo", layout="wide")
 
-# Simple "users" for demo
-VALID_USERS = {
-    "admin": "admin123",
-    "user": "password"
+VALID_USERS = {"admin": "admin123", "user": "password"}
+
+# Model configurations for each task
+MODEL_CONFIG = {
+    "Object Detection": {
+        "models": ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "rtdetr-l.pt"],
+        "description": "Detect and classify objects in the scene",
+        "icon": "🎯"
+    },
+    "Pose Estimation": {
+        "models": ["yolov8n-pose.pt", "yolov8s-pose.pt", "yolov8m-pose.pt", "yolov8l-pose.pt"],
+        "description": "Detect human body keypoints and skeleton",
+        "icon": "🏃"
+    },
+    "Instance Segmentation": {
+        "models": ["yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt", "yolov8l-seg.pt"],
+        "description": "Segment individual object instances with masks",
+        "icon": "🎨"
+    }
 }
 
 # -----------------------
 # Authentication
 # -----------------------
 def login_page():
-    st.title("Group 15 Project — Smart Surveillance")
+    st.title("🎥 Smart Surveillance System")
     st.markdown("Please login to continue.")
     
     username = st.text_input("Username")
@@ -54,25 +68,24 @@ def login_page():
 def logout():
     st.session_state["logged_in"] = False
     st.session_state["username"] = None
-    # Stop camera if running
     if "camera_running" in st.session_state:
         st.session_state["camera_running"] = False
     st.rerun()
 
 
 # -----------------------
-# YOLO Model Loading
+# Model Loading
 # -----------------------
 @st.cache_resource
-def load_model(model_name="yolov8n.pt"):
-    """Load YOLO/RT-DETR model - only called after login"""
+def load_model(model_name):
+    """Load YOLO model - cached for performance"""
     try:
         from ultralytics import YOLO
         model = YOLO(model_name)
         return model
     except Exception as e:
         st.error(f"Failed to load model: {e}")
-        st.info("Make sure ultralytics is installed: pip install ultralytics")
+        st.info("Install ultralytics: pip install ultralytics")
         return None
 
 
@@ -80,21 +93,53 @@ def load_model(model_name="yolov8n.pt"):
 # Detection Page
 # -----------------------
 def detection_page():
-    st.title("🎥 Realtime Object Detection")
+    st.title("🎥 Realtime Computer Vision")
     
-    # Sidebar controls
-    st.sidebar.markdown("## 🎛️ Detection Controls")
+    # Sidebar - Task Selection
+    st.sidebar.markdown("## 🧠 Task Selection")
+    
+    task = st.sidebar.radio(
+        "Choose Task",
+        list(MODEL_CONFIG.keys()),
+        format_func=lambda x: f"{MODEL_CONFIG[x]['icon']} {x}"
+    )
+    
+    st.sidebar.info(MODEL_CONFIG[task]["description"])
+    
+    # Sidebar - Model & Settings
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("## 🎛️ Model Settings")
     
     model_choice = st.sidebar.selectbox(
-        "Model",
-        ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "rtdetr-l.pt"],
-        index=0
+        "Model Size",
+        MODEL_CONFIG[task]["models"],
+        index=0,
+        help="Larger models (l) are more accurate but slower"
     )
     
     conf_threshold = st.sidebar.slider(
         "Confidence Threshold", 
         0.05, 0.95, 0.35, 0.05
     )
+    
+    # Task-specific settings
+    if task == "Instance Segmentation":
+        show_masks = st.sidebar.checkbox("Show Segmentation Masks", value=True)
+        mask_alpha = st.sidebar.slider("Mask Opacity", 0.1, 1.0, 0.5, 0.1)
+    else:
+        show_masks = False
+        mask_alpha = 0.5
+    
+    if task == "Pose Estimation":
+        show_skeleton = st.sidebar.checkbox("Show Skeleton Lines", value=True)
+        show_keypoints = st.sidebar.checkbox("Show Keypoints", value=True)
+    else:
+        show_skeleton = True
+        show_keypoints = True
+    
+    # Camera settings
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("## 📷 Camera Settings")
     
     camera_source = st.sidebar.selectbox(
         "Camera Source",
@@ -104,7 +149,7 @@ def detection_page():
     )
     
     show_fps = st.sidebar.checkbox("Show FPS", value=True)
-    show_labels = st.sidebar.checkbox("Show Labels", value=True)
+    show_labels = st.sidebar.checkbox("Show Labels/Boxes", value=True)
     
     # Account info
     st.sidebar.markdown("---")
@@ -113,74 +158,76 @@ def detection_page():
     if st.sidebar.button("Logout", use_container_width=True):
         logout()
     
-    # Main area
+    # Main area - Task info header
+    st.markdown(f"### {MODEL_CONFIG[task]['icon']} {task}")
+    
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.markdown("### Live Feed")
+        st.markdown("#### Live Feed")
         frame_placeholder = st.empty()
     
     with col2:
-        st.markdown("### Statistics")
+        st.markdown("#### Statistics")
         stats_placeholder = st.empty()
     
     # Control buttons
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+    col_btn1, col_btn2, _ = st.columns([1, 1, 2])
     
     with col_btn1:
-        start_btn = st.button("▶️ Start Camera", use_container_width=True, type="primary")
+        start_btn = st.button("▶️ Start", use_container_width=True, type="primary")
     
     with col_btn2:
-        stop_btn = st.button("⏹️ Stop Camera", use_container_width=True)
+        stop_btn = st.button("⏹️ Stop", use_container_width=True)
     
-    # Initialize camera running state
     if "camera_running" not in st.session_state:
         st.session_state["camera_running"] = False
     
-    # Start camera
     if start_btn:
         st.session_state["camera_running"] = True
     
-    # Stop camera
     if stop_btn:
         st.session_state["camera_running"] = False
     
-    # Run detection loop
+    # Run detection
     if st.session_state["camera_running"]:
         run_detection(
             frame_placeholder=frame_placeholder,
             stats_placeholder=stats_placeholder,
             model_name=model_choice,
+            task=task,
             conf_threshold=conf_threshold,
             camera_source=camera_source,
             show_fps=show_fps,
-            show_labels=show_labels
+            show_labels=show_labels,
+            show_masks=show_masks,
+            mask_alpha=mask_alpha,
+            show_skeleton=show_skeleton,
+            show_keypoints=show_keypoints
         )
     else:
-        frame_placeholder.info("📷 Click 'Start Camera' to begin detection")
-        stats_placeholder.markdown("""
-        **Ready to start**
+        frame_placeholder.info("📷 Click 'Start' to begin")
+        stats_placeholder.markdown(f"""
+        **Ready for {task}**
         
-        - Select model and settings
-        - Click Start Camera
-        - Allow camera access
+        - Model: {model_choice}
+        - Confidence: {conf_threshold}
+        - Camera: {camera_source}
         """)
 
 
-def run_detection(frame_placeholder, stats_placeholder, model_name, conf_threshold, 
-                  camera_source, show_fps, show_labels):
-    """Run the detection loop with live camera feed"""
+def run_detection(frame_placeholder, stats_placeholder, model_name, task,
+                  conf_threshold, camera_source, show_fps, show_labels,
+                  show_masks, mask_alpha, show_skeleton, show_keypoints):
+    """Run detection loop with support for all task types"""
     
-    # Load model
     with st.spinner(f"Loading {model_name}..."):
         model = load_model(model_name)
     
     if model is None:
-        st.error("Failed to load model. Check terminal for errors.")
         st.session_state["camera_running"] = False
         return
     
-    # Open camera
     cap = cv2.VideoCapture(camera_source)
     
     if not cap.isOpened():
@@ -188,20 +235,17 @@ def run_detection(frame_placeholder, stats_placeholder, model_name, conf_thresho
         st.session_state["camera_running"] = False
         return
     
-    # Set camera properties for better performance
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
     
-    # Detection stats
     frame_count = 0
     start_time = time.time()
     fps = 0
     total_detections = 0
     
-    st.success("✅ Camera started successfully!")
+    st.success(f"✅ {task} started!")
     
-    # Detection loop
     while st.session_state.get("camera_running", False):
         ret, frame = cap.read()
         
@@ -209,87 +253,106 @@ def run_detection(frame_placeholder, stats_placeholder, model_name, conf_thresho
             st.warning("⚠️ Failed to grab frame")
             break
         
-        # Calculate FPS
         frame_count += 1
-        elapsed_time = time.time() - start_time
-        if elapsed_time > 0:
-            fps = frame_count / elapsed_time
+        elapsed = time.time() - start_time
+        if elapsed > 0:
+            fps = frame_count / elapsed
         
-        # Run model prediction
         try:
+            # Run prediction
             results = model.predict(
-                source=frame, 
+                source=frame,
                 conf=conf_threshold,
                 verbose=False,
                 stream=False
             )
             
-            # Get annotated frame
+            # Get annotated frame based on task
             if show_labels:
-                annotated_frame = results[0].plot()
+                if task == "Instance Segmentation" and show_masks:
+                    annotated = results[0].plot(masks=True)
+                elif task == "Pose Estimation":
+                    annotated = results[0].plot(
+                        boxes=show_labels,
+                        kpt_line=show_skeleton,
+                        kpt_radius=3 if show_keypoints else 0
+                    )
+                else:
+                    annotated = results[0].plot()
             else:
-                annotated_frame = frame.copy()
+                annotated = frame.copy()
             
             # Count detections
-            num_detections = len(results[0].boxes)
-            total_detections += num_detections
+            num_det = len(results[0].boxes) if results[0].boxes is not None else 0
+            total_detections += num_det
             
-            # Add FPS overlay if enabled
+            # FPS overlay
             if show_fps:
-                cv2.putText(
-                    annotated_frame,
-                    f"FPS: {fps:.1f}",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 255, 0),
-                    2
-                )
+                cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                cv2.putText(annotated, f"Task: {task}", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             
-            # Convert BGR to RGB for Streamlit
-            annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            # Convert to RGB
+            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            frame_placeholder.image(annotated_rgb, channels="RGB", use_container_width=True)
             
-            # Display frame
-            frame_placeholder.image(annotated_frame_rgb, channels="RGB", use_container_width=True)
-            
-            # Update statistics
-            detected_classes = []
-            if results[0].boxes:
-                for box in results[0].boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = model.names[cls_id]
-                    detected_classes.append(cls_name)
-            
-            # Count unique classes
-            class_counts = {}
-            for cls in detected_classes:
-                class_counts[cls] = class_counts.get(cls, 0) + 1
-            
-            stats_placeholder.markdown(f"""
+            # Build statistics based on task
+            stats_md = f"""
             **📊 Live Stats**
             
+            **Task:** {task}  
             **FPS:** {fps:.1f}  
             **Frames:** {frame_count}  
-            **Current Detections:** {num_detections}  
-            **Total Detections:** {total_detections}
+            **Current:** {num_det}  
+            **Total:** {total_detections}
             
-            **Detected Objects:**
-            """)
+            ---
+            """
             
-            if class_counts:
-                for cls, count in class_counts.items():
-                    stats_placeholder.markdown(f"- **{cls}**: {count}")
-            else:
-                stats_placeholder.markdown("_No objects detected_")
+            if task == "Object Detection":
+                stats_md += "\n**Detected Objects:**\n"
+                if results[0].boxes is not None:
+                    class_counts = {}
+                    for box in results[0].boxes:
+                        cls_name = model.names[int(box.cls[0])]
+                        class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+                    for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
+                        stats_md += f"- **{cls}**: {cnt}\n"
+                else:
+                    stats_md += "_No objects detected_"
+            
+            elif task == "Pose Estimation":
+                stats_md += "\n**Pose Info:**\n"
+                if results[0].keypoints is not None:
+                    num_people = len(results[0].keypoints)
+                    stats_md += f"- **People detected:** {num_people}\n"
+                    stats_md += f"- **Keypoints/person:** 17\n"
+                else:
+                    stats_md += "_No poses detected_"
+            
+            elif task == "Instance Segmentation":
+                stats_md += "\n**Segmentation Info:**\n"
+                if results[0].masks is not None:
+                    num_masks = len(results[0].masks)
+                    stats_md += f"- **Segments:** {num_masks}\n"
+                    class_counts = {}
+                    for box in results[0].boxes:
+                        cls_name = model.names[int(box.cls[0])]
+                        class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+                    for cls, cnt in sorted(class_counts.items(), key=lambda x: -x[1]):
+                        stats_md += f"- **{cls}**: {cnt}\n"
+                else:
+                    stats_md += "_No segments detected_"
+            
+            stats_placeholder.markdown(stats_md)
         
         except Exception as e:
-            st.error(f"Detection error: {e}")
+            st.error(f"Error: {e}")
             break
         
-        # Small delay to prevent overwhelming the UI
         time.sleep(0.01)
     
-    # Release resources
     cap.release()
     st.info("Camera stopped")
 
@@ -298,12 +361,10 @@ def run_detection(frame_placeholder, stats_placeholder, model_name, conf_thresho
 # Main
 # -----------------------
 def main():
-    # Initialize session state
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
         st.session_state["username"] = None
 
-    # Route to appropriate page
     if not st.session_state["logged_in"]:
         login_page()
     else:
